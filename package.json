@@ -8,18 +8,20 @@
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.95.0",
-    "@solana/spl-token": "^0.4.8",
     "@coral-xyz/anchor": "^0.30.1",
     "@grpc/grpc-js": "^1.10.0",
     "@grpc/proto-loader": "^0.7.10",
+    "@pump-fun/pump-swap-sdk": "^1.16.0",
+    "@solana/spl-token": "^0.4.8",
+    "@solana/web3.js": "^1.95.0",
     "axios": "^1.7.0",
-    "bs58": "^6.0.0",
     "better-sqlite3": "^11.0.0",
+    "bs58": "^6.0.0",
     "dotenv": "^16.4.0",
     "express": "^4.19.0",
     "express-basic-auth": "^1.2.1",
     "node-fetch": "^2.7.0",
+    "shredstream": "^2.0.0",
     "ws": "^8.18.0"
   },
   "engines": {

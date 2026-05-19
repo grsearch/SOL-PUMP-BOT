@@ -64,10 +64,18 @@ function u64LE(n) {
 }
 
 function findPoolPda(baseMint, quoteMint = WSOL_MINT, index = 0) {
+  // Pump migrate pools use pumpPoolAuthority PDA as creator
+  // seeds: ["pool", index_le_u16, pumpPoolAuthorityPda(baseMint), baseMint, quoteMint]
+  // pumpPoolAuthorityPda = PDA(["pool-authority", baseMint], PUMP_FUN_PROGRAM)
+  const pumpFunProgram = new PublicKey(cfg.pump.pumpFunProgram);
+  const [poolAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('pool-authority'), baseMint.toBuffer()],
+    pumpFunProgram,
+  );
   const idxBuf = Buffer.alloc(2);
   idxBuf.writeUInt16LE(index);
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('pool'), idxBuf, baseMint.toBuffer(), quoteMint.toBuffer()],
+    [Buffer.from('pool'), idxBuf, poolAuthority.toBuffer(), baseMint.toBuffer(), quoteMint.toBuffer()],
     PUMP_AMM_PROGRAM,
   )[0];
 }
@@ -94,8 +102,10 @@ function findEventAuthority() {
  * @param {bigint}    ctx.maxQuoteIn       愿意付的最大 SOL (lamports)
  */
 function buildBuyIx(ctx) {
-  const userBaseAta  = getAssociatedTokenAddressSync(ctx.baseMint, ctx.user);
-  const userQuoteAta = getAssociatedTokenAddressSync(WSOL_MINT, ctx.user);
+  const baseTokenProgram = ctx.baseTokenProgram || TOKEN_PROGRAM_ID;
+  const quoteTokenProgram = ctx.quoteTokenProgram || TOKEN_PROGRAM_ID;
+  const userBaseAta  = getAssociatedTokenAddressSync(ctx.baseMint, ctx.user, false, baseTokenProgram);
+  const userQuoteAta = getAssociatedTokenAddressSync(WSOL_MINT, ctx.user, false, quoteTokenProgram);
   const eventAuth    = findEventAuthority();
 
   const data = Buffer.concat([
@@ -116,8 +126,8 @@ function buildBuyIx(ctx) {
     { pubkey: ctx.poolQuoteVault, isSigner: false, isWritable: true },
     { pubkey: ctx.protocolFeeRecipient, isSigner: false, isWritable: false },
     { pubkey: ctx.protocolFeeRecipientWsol, isSigner: false, isWritable: true },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: baseTokenProgram, isSigner: false, isWritable: false },
+    { pubkey: quoteTokenProgram, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: eventAuth, isSigner: false, isWritable: false },
@@ -131,8 +141,10 @@ function buildBuyIx(ctx) {
  * 构造 sell 指令
  */
 function buildSellIx(ctx) {
-  const userBaseAta  = getAssociatedTokenAddressSync(ctx.baseMint, ctx.user);
-  const userQuoteAta = getAssociatedTokenAddressSync(WSOL_MINT, ctx.user);
+  const baseTokenProgram = ctx.baseTokenProgram || TOKEN_PROGRAM_ID;
+  const quoteTokenProgram = ctx.quoteTokenProgram || TOKEN_PROGRAM_ID;
+  const userBaseAta  = getAssociatedTokenAddressSync(ctx.baseMint, ctx.user, false, baseTokenProgram);
+  const userQuoteAta = getAssociatedTokenAddressSync(WSOL_MINT, ctx.user, false, quoteTokenProgram);
   const eventAuth    = findEventAuthority();
 
   const data = Buffer.concat([
@@ -153,8 +165,8 @@ function buildSellIx(ctx) {
     { pubkey: ctx.poolQuoteVault, isSigner: false, isWritable: true },
     { pubkey: ctx.protocolFeeRecipient, isSigner: false, isWritable: false },
     { pubkey: ctx.protocolFeeRecipientWsol, isSigner: false, isWritable: true },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+    { pubkey: baseTokenProgram, isSigner: false, isWritable: false },
+    { pubkey: quoteTokenProgram, isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
     { pubkey: eventAuth, isSigner: false, isWritable: false },
@@ -171,6 +183,8 @@ function buildSellIx(ctx) {
 function buildBuyTx({
   user, baseMint, pool, poolBaseVault, poolQuoteVault, globalConfig,
   protocolFeeRecipient, protocolFeeRecipientWsol,
+  baseTokenProgram: baseTokenProgramArg = TOKEN_PROGRAM_ID,
+  quoteTokenProgram: quoteTokenProgramArg = TOKEN_PROGRAM_ID,
   quoteInLamports,             // 计划花掉的 SOL (max_quote_in 用这个值)
   wrapLamports,                // 实际 wrap 进 wSOL ATA 的 SOL (≥ quoteInLamports, 多余的会通过 close 退回)
   expectedBaseOut,             // 估算的 base token 数量 (整数)
@@ -193,10 +207,12 @@ function buildBuyTx({
   }
 
   // 2. ensure ATAs exist
-  const userBaseAta = getAssociatedTokenAddressSync(baseMint, user);
-  const userWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, user);
-  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userBaseAta, user, baseMint));
-  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userWsolAta, user, WSOL_MINT));
+  const baseTokenProgram = baseTokenProgramArg;
+  const quoteTokenProgram = quoteTokenProgramArg;
+  const userBaseAta = getAssociatedTokenAddressSync(baseMint, user, false, baseTokenProgram);
+  const userWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, user, false, quoteTokenProgram);
+  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userBaseAta, user, baseMint, baseTokenProgram));
+  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userWsolAta, user, WSOL_MINT, quoteTokenProgram));
 
   // 3. wrap SOL: transfer (含缓冲) + syncNative
   ixs.push(SystemProgram.transfer({
@@ -212,6 +228,7 @@ function buildBuyTx({
     protocolFeeRecipient, protocolFeeRecipientWsol,
     baseAmountOut: minOut,
     maxQuoteIn: BigInt(quoteInLamports),
+    baseTokenProgram, quoteTokenProgram,
   }));
 
   // 5. close wSOL ATA → 退回未消耗的 wSOL + rent
@@ -236,6 +253,8 @@ function buildBuyTx({
 function buildSellTx({
   user, baseMint, pool, poolBaseVault, poolQuoteVault, globalConfig,
   protocolFeeRecipient, protocolFeeRecipientWsol,
+  baseTokenProgram: baseTokenProgramArg = TOKEN_PROGRAM_ID,
+  quoteTokenProgram: quoteTokenProgramArg = TOKEN_PROGRAM_ID,
   baseAmountIn,
   expectedQuoteOut,
   slippageBps,
@@ -254,8 +273,12 @@ function buildSellTx({
     ixs.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports }));
   }
 
-  const userWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, user);
-  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userWsolAta, user, WSOL_MINT));
+  const baseTokenProgram = baseTokenProgramArg;
+  const quoteTokenProgram = quoteTokenProgramArg;
+  const userBaseAta = getAssociatedTokenAddressSync(baseMint, user, false, baseTokenProgram);
+  const userWsolAta = getAssociatedTokenAddressSync(WSOL_MINT, user, false, quoteTokenProgram);
+  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userBaseAta, user, baseMint, baseTokenProgram));
+  ixs.push(createAssociatedTokenAccountIdempotentInstruction(user, userWsolAta, user, WSOL_MINT, quoteTokenProgram));
 
   const minOut = (BigInt(expectedQuoteOut) * BigInt(10000 - slippageBps)) / 10000n;
 
@@ -264,6 +287,7 @@ function buildSellTx({
     protocolFeeRecipient, protocolFeeRecipientWsol,
     baseAmountIn: BigInt(baseAmountIn),
     minQuoteOut: minOut,
+    baseTokenProgram, quoteTokenProgram,
   }));
 
   // unwrap wSOL → SOL

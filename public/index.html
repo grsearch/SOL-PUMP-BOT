@@ -16,7 +16,7 @@
   .red { color: #ef5b6b; }
   .grey { color: #6a7390; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { padding: 6px 8px; border-bottom: 1px solid #1f2840; text-align: left; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #1f2840; text-align: left; vertical-align: middle; }
   th { color: #6a7390; font-weight: normal; font-size: 11px; text-transform: uppercase; }
   td a { color: #5b9dff; text-decoration: none; }
   td a:hover { text-decoration: underline; }
@@ -25,6 +25,9 @@
   .state-HOLDING  { color: #4cd380; }
   .state-SELLING  { color: #b48a3d; }
   .state-CLOSED   { color: #6a7390; }
+  .state-SELL_FAILED { color: #ef5b6b; }
+  .state-SELL_PENDING { color: #b48a3d; }
+  .state-NO_BUY { color: #ef5b6b; }
   .reason-RUG, .reason-EMA_CROSS, .reason-TRAILING, .reason-BELOW_THRESHOLD, .reason-MIGRATE, .reason-MANUAL {
     background: #1f2840; padding: 2px 6px; border-radius: 3px; font-size: 11px;
   }
@@ -32,10 +35,22 @@
   .reason-EMA_CROSS { background: #1d3a4a; color: #5bafff; }
   .reason-TRAILING { background: #1d4a35; color: #6bd098; }
   .reason-BELOW_THRESHOLD { background: #4a3a1d; color: #d4a85b; }
+  .status-PENDING { color: #b48a3d; }
+  .status-CONFIRMED { color: #4cd380; }
+  .status-FAILED { color: #ef5b6b; }
+  .slot-same { background: #1d4a35; color: #6bd098; padding: 2px 6px; border-radius: 3px; font-weight: bold; }
+  .slot-next { background: #1d3a4a; color: #5bafff; padding: 2px 6px; border-radius: 3px; }
+  .slot-late { background: #4a3a1d; color: #d4a85b; padding: 2px 6px; border-radius: 3px; }
+  .slot-bad  { background: #4a1d24; color: #ff8088; padding: 2px 6px; border-radius: 3px; }
   .add-form { display: flex; gap: 8px; }
   .add-form input { background: #0b0f1a; border: 1px solid #1f2840; color: #d8def0; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; }
   .add-form button { background: #2d4ea8; color: white; border: 0; padding: 6px 16px; border-radius: 4px; cursor: pointer; }
   .add-form button:hover { background: #3a5fc8; }
+  .est { color: #6a7390; font-style: italic; }
+  /* 配对行: BUY 和 SELL 用分隔线表示 */
+  .pair-row td { border-bottom: 1px solid #2a334a; }
+  .ca-link { color: #5b9dff; }
+  .ts-small { color: #8a92a8; font-size: 10px; }
 </style>
 </head>
 <body>
@@ -43,7 +58,7 @@
 
 <div class="row">
   <div class="card stat">
-    <div class="label">24h PnL</div>
+    <div class="label">24h PnL (实际)</div>
     <div class="value" id="pnl24h">—</div>
   </div>
   <div class="card stat">
@@ -88,20 +103,23 @@
 </div>
 
 <div class="card">
-  <h2 style="margin-top:0; font-size:14px;">交易记录</h2>
+  <h2 style="margin-top:0; font-size:14px;">交易记录 (买卖配对)</h2>
   <table id="trades-table">
     <thead>
       <tr>
-        <th>时间</th>
+        <th>买入时间</th>
         <th>Symbol</th>
-        <th>Side</th>
-        <th>Reason</th>
-        <th>SOL</th>
-        <th>价格</th>
-        <th>PnL</th>
-        <th>延迟</th>
-        <th>通道</th>
-        <th>Tx</th>
+        <th>CA</th>
+        <th>State</th>
+        <th>买入 SOL</th>
+        <th>卖出 SOL</th>
+        <th>PnL (实际)</th>
+        <th>卖出原因</th>
+        <th>Slot Δ</th>
+        <th>Buy 延迟</th>
+        <th>Sell 延迟</th>
+        <th>Buy Tx</th>
+        <th>Sell Tx</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -113,14 +131,32 @@ const fmtSol  = v => v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed
 const fmtUsd  = v => !v ? '—' : v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : Number(v).toFixed(2);
 const fmtPrice = v => !v ? '—' : v < 0.000001 ? v.toExponential(2) : v < 1 ? v.toFixed(8) : v.toFixed(4);
 const fmtAge  = s => { if (s == null) return '—'; if (s<60) return s+'s'; if (s<3600) return Math.floor(s/60)+'m'; if (s<86400) return (s/3600).toFixed(1)+'h'; return (s/86400).toFixed(1)+'d'; };
-const fmtTs   = ts => new Date(ts).toLocaleString();
+const fmtTs   = ts => ts ? new Date(ts).toLocaleString() : '—';
 const shortMint = m => m.slice(0,4) + '...' + m.slice(-4);
 const shortSig = s => s ? s.slice(0,8) + '...' : '';
 
+function renderSol(v, isActual = false) {
+  if (v == null) return '—';
+  const cls = v > 0 ? 'green' : v < 0 ? 'red' : 'grey';
+  return `<span class="${cls}">${fmtSol(v)}</span>`;
+}
+
+function renderSlotDelta(delta, reason) {
+  if (delta == null) return reason === 'RUG' ? '<span class="grey">pending</span>' : '—';
+  if (delta === 0) return '<span class="slot-same">SAME_SLOT</span>';
+  if (delta === 1) return '<span class="slot-next">+1</span>';
+  if (delta <= 3) return `<span class="slot-late">+${delta}</span>`;
+  return `<span class="slot-bad">+${delta}</span>`;
+}
+
+function gmgnLink(mint, text) {
+  return `<a class="ca-link" target="_blank" href="https://gmgn.ai/sol/token/${mint}">${text}</a>`;
+}
+
 async function refresh() {
-  const [tokens, trades, pnl] = await Promise.all([
+  const [tokens, paired, pnl] = await Promise.all([
     fetch('/api/tokens').then(r=>r.json()),
-    fetch('/api/trades?limit=50').then(r=>r.json()),
+    fetch('/api/trades-paired?limit=100').then(r=>r.json()),
     fetch('/api/pnl').then(r=>r.json()),
   ]);
 
@@ -136,7 +172,7 @@ async function refresh() {
   tb.innerHTML = tokens.map(t => `
     <tr>
       <td>${t.symbol || '???'}</td>
-      <td><a target="_blank" href="https://gmgn.ai/sol/token/${t.mint}">${shortMint(t.mint)}</a></td>
+      <td>${gmgnLink(t.mint, shortMint(t.mint))}</td>
       <td class="state-${t.state}">${t.state}</td>
       <td>${t.holders || '—'}</td>
       <td>${fmtAge(t.ageSec)}</td>
@@ -151,20 +187,27 @@ async function refresh() {
   `).join('');
 
   const tr = document.querySelector('#trades-table tbody');
-  tr.innerHTML = trades.map(x => `
-    <tr>
-      <td>${fmtTs(x.ts)}</td>
-      <td>${x.symbol || '???'}</td>
-      <td class="${x.side==='BUY'?'state-BUYING':'state-CLOSED'}">${x.side}</td>
-      <td><span class="reason-${x.reason}">${x.reason}</span></td>
-      <td class="${x.sol_amount>0?'green':'red'}">${fmtSol(x.sol_amount)}</td>
-      <td>${fmtPrice(x.price_usd)}</td>
-      <td class="${x.pnl_sol>0?'green':x.pnl_sol<0?'red':'grey'}">${fmtSol(x.pnl_sol)}</td>
-      <td>${x.latency_ms ? x.latency_ms+'ms' : '—'}</td>
-      <td>${x.channel || '—'}</td>
-      <td>${x.tx_sig ? `<a target="_blank" href="https://solscan.io/tx/${x.tx_sig}">${shortSig(x.tx_sig)}</a>` : '—'}</td>
+  tr.innerHTML = paired.map(x => {
+    const buyTs = x.buyTs ? fmtTs(x.buyTs) : '—';
+    const sellTsBadge = x.sellTs ? `<div class="ts-small">卖出 ${fmtTs(x.sellTs)}</div>` : '';
+    return `
+    <tr class="pair-row">
+      <td>${buyTs}${sellTsBadge}</td>
+      <td>${x.symbol}</td>
+      <td>${gmgnLink(x.mint, shortMint(x.mint))}</td>
+      <td class="state-${x.state}">${x.state}${x.lastFailReason ? ` (${x.lastFailReason})` : ''}</td>
+      <td>${renderSol(x.buyAmountSol)}</td>
+      <td>${renderSol(x.sellAmountSol)}</td>
+      <td>${renderSol(x.pnlSol)}</td>
+      <td>${x.sellReason ? `<span class="reason-${x.sellReason}">${x.sellReason}</span>` : '—'}</td>
+      <td>${renderSlotDelta(x.sellSlotDelta, x.sellReason)}</td>
+      <td>${x.buyLatencyMs ? x.buyLatencyMs+'ms' : '—'}</td>
+      <td>${x.sellLatencyMs ? x.sellLatencyMs+'ms' : '—'}</td>
+      <td>${x.buyTxSig ? `<a target="_blank" href="https://solscan.io/tx/${x.buyTxSig}">${shortSig(x.buyTxSig)}</a>` : '—'}</td>
+      <td>${x.sellTxSig ? `<a target="_blank" href="https://solscan.io/tx/${x.sellTxSig}">${shortSig(x.sellTxSig)}</a>` : '—'}</td>
     </tr>
-  `).join('');
+    `;
+  }).join('');
 }
 
 async function addToken() {
@@ -187,7 +230,6 @@ async function removeToken(mint) {
   refresh();
 }
 
-// websocket 推送 → 收到就刷新
 const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws');
 ws.onmessage = () => refresh();
 ws.onclose = () => setTimeout(() => location.reload(), 2000);
