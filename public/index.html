@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>SOL Pump Bot</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "SF Mono", Menlo, monospace; background: #0b0f1a; color: #d8def0; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; color: #e8ecf7; }
+  .row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .card { background: #131929; border: 1px solid #1f2840; border-radius: 8px; padding: 14px; }
+  .stat { flex: 1; min-width: 180px; }
+  .stat .label { color: #6a7390; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 22px; margin-top: 4px; }
+  .green { color: #4cd380; }
+  .red { color: #ef5b6b; }
+  .grey { color: #6a7390; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid #1f2840; text-align: left; }
+  th { color: #6a7390; font-weight: normal; font-size: 11px; text-transform: uppercase; }
+  td a { color: #5b9dff; text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .state-PENDING  { color: #b48a3d; }
+  .state-BUYING   { color: #5b9dff; }
+  .state-HOLDING  { color: #4cd380; }
+  .state-SELLING  { color: #b48a3d; }
+  .state-CLOSED   { color: #6a7390; }
+  .reason-RUG, .reason-EMA_CROSS, .reason-TRAILING, .reason-BELOW_THRESHOLD, .reason-MIGRATE, .reason-MANUAL {
+    background: #1f2840; padding: 2px 6px; border-radius: 3px; font-size: 11px;
+  }
+  .reason-RUG { background: #4a1d24; color: #ff8088; }
+  .reason-EMA_CROSS { background: #1d3a4a; color: #5bafff; }
+  .reason-TRAILING { background: #1d4a35; color: #6bd098; }
+  .reason-BELOW_THRESHOLD { background: #4a3a1d; color: #d4a85b; }
+  .add-form { display: flex; gap: 8px; }
+  .add-form input { background: #0b0f1a; border: 1px solid #1f2840; color: #d8def0; padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 12px; }
+  .add-form button { background: #2d4ea8; color: white; border: 0; padding: 6px 16px; border-radius: 4px; cursor: pointer; }
+  .add-form button:hover { background: #3a5fc8; }
+</style>
+</head>
+<body>
+<h1>SOL Pump Bot</h1>
+
+<div class="row">
+  <div class="card stat">
+    <div class="label">24h PnL</div>
+    <div class="value" id="pnl24h">—</div>
+  </div>
+  <div class="card stat">
+    <div class="label">监控中</div>
+    <div class="value" id="monitoring">—</div>
+  </div>
+  <div class="card stat">
+    <div class="label">持仓中</div>
+    <div class="value" id="holding">—</div>
+  </div>
+  <div class="card stat" style="flex: 2;">
+    <div class="label">手动添加监控</div>
+    <form class="add-form" onsubmit="event.preventDefault(); addToken();">
+      <input id="ca-input" placeholder="CA 地址 (Solana mint)" style="flex:1" />
+      <input id="symbol-input" placeholder="symbol (可选)" style="width:120px" />
+      <button>添加</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 16px;">
+  <h2 style="margin-top:0; font-size:14px;">代币监控列表</h2>
+  <table id="tokens-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>CA</th>
+        <th>State</th>
+        <th>Holders</th>
+        <th>Age</th>
+        <th>FDV</th>
+        <th>LP</th>
+        <th>24h Vol</th>
+        <th>Price</th>
+        <th>Peak</th>
+        <th>PnL (SOL)</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0; font-size:14px;">交易记录</h2>
+  <table id="trades-table">
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>Symbol</th>
+        <th>Side</th>
+        <th>Reason</th>
+        <th>SOL</th>
+        <th>价格</th>
+        <th>PnL</th>
+        <th>延迟</th>
+        <th>通道</th>
+        <th>Tx</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+const fmtSol  = v => v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(4);
+const fmtUsd  = v => !v ? '—' : v >= 1e6 ? (v/1e6).toFixed(2)+'M' : v >= 1e3 ? (v/1e3).toFixed(1)+'K' : Number(v).toFixed(2);
+const fmtPrice = v => !v ? '—' : v < 0.000001 ? v.toExponential(2) : v < 1 ? v.toFixed(8) : v.toFixed(4);
+const fmtAge  = s => { if (s == null) return '—'; if (s<60) return s+'s'; if (s<3600) return Math.floor(s/60)+'m'; if (s<86400) return (s/3600).toFixed(1)+'h'; return (s/86400).toFixed(1)+'d'; };
+const fmtTs   = ts => new Date(ts).toLocaleString();
+const shortMint = m => m.slice(0,4) + '...' + m.slice(-4);
+const shortSig = s => s ? s.slice(0,8) + '...' : '';
+
+async function refresh() {
+  const [tokens, trades, pnl] = await Promise.all([
+    fetch('/api/tokens').then(r=>r.json()),
+    fetch('/api/trades?limit=50').then(r=>r.json()),
+    fetch('/api/pnl').then(r=>r.json()),
+  ]);
+
+  const pnl24 = pnl.pnl24hSol || 0;
+  const pnlEl = document.getElementById('pnl24h');
+  pnlEl.textContent = fmtSol(pnl24) + ' SOL';
+  pnlEl.className = 'value ' + (pnl24 > 0 ? 'green' : pnl24 < 0 ? 'red' : 'grey');
+
+  document.getElementById('monitoring').textContent = tokens.length;
+  document.getElementById('holding').textContent = tokens.filter(t=>t.state==='HOLDING').length;
+
+  const tb = document.querySelector('#tokens-table tbody');
+  tb.innerHTML = tokens.map(t => `
+    <tr>
+      <td>${t.symbol || '???'}</td>
+      <td><a target="_blank" href="https://gmgn.ai/sol/token/${t.mint}">${shortMint(t.mint)}</a></td>
+      <td class="state-${t.state}">${t.state}</td>
+      <td>${t.holders || '—'}</td>
+      <td>${fmtAge(t.ageSec)}</td>
+      <td>$${fmtUsd(t.fdv)}</td>
+      <td>$${fmtUsd(t.lp)}</td>
+      <td>$${fmtUsd(t.volume24h)}</td>
+      <td>${fmtPrice(t.currentPriceUsd)}</td>
+      <td>${fmtPrice(t.peakPriceUsd)}</td>
+      <td class="${t.pnlSol>0?'green':t.pnlSol<0?'red':'grey'}">${fmtSol(t.pnlSol)}</td>
+      <td><a href="#" onclick="event.preventDefault(); removeToken('${t.mint}')">🗑️</a></td>
+    </tr>
+  `).join('');
+
+  const tr = document.querySelector('#trades-table tbody');
+  tr.innerHTML = trades.map(x => `
+    <tr>
+      <td>${fmtTs(x.ts)}</td>
+      <td>${x.symbol || '???'}</td>
+      <td class="${x.side==='BUY'?'state-BUYING':'state-CLOSED'}">${x.side}</td>
+      <td><span class="reason-${x.reason}">${x.reason}</span></td>
+      <td class="${x.sol_amount>0?'green':'red'}">${fmtSol(x.sol_amount)}</td>
+      <td>${fmtPrice(x.price_usd)}</td>
+      <td class="${x.pnl_sol>0?'green':x.pnl_sol<0?'red':'grey'}">${fmtSol(x.pnl_sol)}</td>
+      <td>${x.latency_ms ? x.latency_ms+'ms' : '—'}</td>
+      <td>${x.channel || '—'}</td>
+      <td>${x.tx_sig ? `<a target="_blank" href="https://solscan.io/tx/${x.tx_sig}">${shortSig(x.tx_sig)}</a>` : '—'}</td>
+    </tr>
+  `).join('');
+}
+
+async function addToken() {
+  const mint = document.getElementById('ca-input').value.trim();
+  const symbol = document.getElementById('symbol-input').value.trim();
+  if (!mint) return;
+  await fetch('/api/tokens', {
+    method: 'POST',
+    headers: {'content-type':'application/json'},
+    body: JSON.stringify({ mint, symbol }),
+  });
+  document.getElementById('ca-input').value = '';
+  document.getElementById('symbol-input').value = '';
+  refresh();
+}
+
+async function removeToken(mint) {
+  if (!confirm('确认移除 ' + mint + ' ?')) return;
+  await fetch('/api/tokens/' + mint, { method: 'DELETE' });
+  refresh();
+}
+
+// websocket 推送 → 收到就刷新
+const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws');
+ws.onmessage = () => refresh();
+ws.onclose = () => setTimeout(() => location.reload(), 2000);
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
